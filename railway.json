@@ -1,0 +1,12 @@
+{
+  "build": {
+    "command": "npm install --omit=dev"
+  },
+  "deploy": {
+    "startCommand": "node server.js",
+    "healthcheckPath": "/healthz",
+    "healthcheckTimeout": 10,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}

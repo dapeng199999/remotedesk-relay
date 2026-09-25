@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RemoteDesk 控制端</title>
+<style>
+  :root {
+    --bg: #f4f6fa;
+    --card: #ffffff;
+    --line: #e2e8f0;
+    --text: #16202e;
+    --muted: #6b7a90;
+    --primary: #1565c0;
+    --ok: #2e7d32;
+    --warn: #ef6c00;
+    --err: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 12px 18px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .grow { flex: 1; }
+  input, button, select {
+    font: inherit; padding: 7px 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: #fff; color: var(--text);
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .status {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+    background: #eef2f7; color: var(--muted);
+  }
+  .status.ok { background: #e6f4ea; color: var(--ok); }
+  .status.wait { background: #fff4e5; color: var(--warn); }
+  .status.err { background: #fdecea; color: var(--err); }
+  main { padding: 16px 18px 24px; display: grid; gap: 14px; grid-template-columns: 1fr 300px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+  #stage {
+    position: relative; background: #0d1117; border-radius: 10px; overflow: hidden;
+    min-height: 380px; display: flex; align-items: center; justify-content: center;
+    /* 手机端禁用默认滚动/缩放与长按选中，手势全部交给远程控制 */
+    touch-action: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+  #stage canvas, #stage img { display: block; max-width: 100%; max-height: 60vh; }
+  #hint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: #8b9bb4; font-size: 13px; text-align: center; padding: 20px; pointer-events: none;
+  }
+  #stage.live #hint { display: none; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .toolbar button { min-width: 74px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row label { width: 72px; color: var(--muted); font-size: 13px; }
+  .kv { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+  .kv:last-child { border-bottom: 0; }
+  .kv span:first-child { color: var(--muted); }
+  .kv span:last-child { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .log {
+    font: 12px/1.6 ui-monospace, Consolas, monospace; background: #f8fafc;
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px;
+    height: 150px; overflow: auto; color: #3c4a5e;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px;
+    background: #eef2f7; color: var(--muted); margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>RemoteDesk 控制端</h1>
+  <span id="status" class="status">未连接</span>
+  <span id="mode" class="badge">H.264 / WebCodecs</span>
+  <div class="grow"></div>
+  <input id="server" value="" placeholder="ws://192.168.1.100:8787" style="width: 230px" />
+  <input id="code" placeholder="设备码" maxlength="10" style="width: 110px; text-transform: uppercase" />
+  <button id="connect" class="primary">连接</button>
+  <button id="disconnect" disabled>断开</button>
+</header>
+
+<main>
+  <section class="card">
+    <h2>远程屏幕</h2>
+    <div id="stage">
+      <canvas id="view" width="720" height="1280" style="display:none"></canvas>
+      <img id="mockView" style="display:none" />
+      <div id="hint">输入设备码并连接，等待手机端机主授权并通过人脸验证</div>
+    </div>
+    <div class="toolbar">
+      <button data-key="BACK">返回</button>
+      <button data-key="HOME">主页</button>
+      <button data-key="RECENTS">最近任务</button>
+      <button data-key="ENTER">回车</button>
+      <button data-key="DEL">删除</button>
+      <input id="text" placeholder="输入文字到手机焦点框" style="flex:1; min-width: 160px" />
+      <button id="sendText" class="primary">发送文字</button>
+    </div>
+    <p class="muted" style="margin:10px 0 0">
+      电脑：左键单击 = 点击 · 拖动 = 滑动 · 右键 = 长按 · 双击 = 双击。<br />
+      手机：轻点 = 点击 · 滑动 = 滑动 · 按住 0.6 秒 = 长按 · 连点两下 = 双击。<br />
+      坐标使用归一化比例，适配任意分辨率。
+    </p>
+  </section>
+
+  <aside>
+    <section class="card" style="margin-bottom:14px">
+      <h2>会话信息</h2>
+      <div class="kv"><span>设备码</span><span id="iCode">—</span></div>
+      <div class="kv"><span>设备名</span><span id="iDev">—</span></div>
+      <div class="kv"><span>分辨率</span><span id="iRes">—</span></div>
+      <div class="kv"><span>帧率</span><span id="iFps">—</span></div>
+      <div class="kv"><span>码率</span><span id="iRate">—</span></div>
+      <div class="kv"><span>端到端延迟</span><span id="iLat">—</span></div>
+    </section>
+    <section class="card">
+      <h2>日志</h2>
+      <div id="log" class="log"></div>
+    </section>
+  </aside>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    server: $('server'), code: $('code'), connect: $('connect'), disconnect: $('disconnect'),
+    status: $('status'), mode: $('mode'), stage: $('stage'), view: $('view'), mockView: $('mockView'),
+    hint: $('hint'), log: $('log'), text: $('text'), sendText: $('sendText'),
+    iCode: $('iCode'), iDev: $('iDev'), iRes: $('iRes'), iFps: $('iFps'), iRate: $('iRate'), iLat: $('iLat')
+  };
+
+  // 默认连到承载本页面的服务器
+  el.server.value = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
+
+  let ws = null;
+  let authorized = false;
+  let decoder = null;
+  let avcC = null;
+  let codecString = null;
+  let pendingKey = false;
+  let meta = { w: 0, h: 0 };
+
+  const stats = { frames: 0, bytes: 0, lastSec: 0, fps: 0, kbps: 0, lat: 0 };
+
+  function log(msg) {
+    const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    el.log.textContent += `[${t}] ${msg}\n`;
+    el.log.scrollTop = el.log.scrollHeight;
+  }
+
+  function setStatus(text, cls) {
+    el.status.textContent = text;
+    el.status.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  // ---------------------------------------------------------------- 连接
+
+  el.connect.onclick = () => {
+    const code = el.code.value.trim().toUpperCase();
+    if (!code) { alert('请输入设备码'); return; }
+    if (ws && ws.readyState === 1) { log('已有连接，请先断开'); return; }
+
+    const url = new URL(el.server.value);
+    url.pathname = '/controller';
+    log(`连接 ${url.toString()} …`);
+    setStatus('连接中…', '');
+
+    ws = new WebSocket(url.toString());
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      log('已连到中继服务器，申请接入…');
+      ws.send(JSON.stringify({ t: 'join', code, name: navigator.userAgent.slice(0, 40) || 'Web 控制端' }));
+      el.iCode.textContent = code;
+    };
+
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') handleText(JSON.parse(ev.data));
+      else handleVideo(new Uint8Array(ev.data));
+    };
+
+    ws.onclose = (ev) => {
+      authorized = false;
+      el.connect.disabled = false;
+      el.disconnect.disabled = true;
+      el.stage.classList.remove('live');
+      setStatus('已断开', 'err');
+      log(`连接关闭 (${ev.code} ${ev.reason || ''})`);
+      resetDecoder();
+    };
+
+    ws.onerror = () => { setStatus('连接错误', 'err'); log('WebSocket 错误'); };
+
+    el.connect.disabled = true;
+    el.disconnect.disabled = false;
+  };
+
+  el.disconnect.onclick = () => {
+    if (ws) { try { ws.send(JSON.stringify({ t: 'leave' })); } catch (_) {} ws.close(); }
+  };
+
+  function handleText(msg) {
+    switch (msg.t) {
+      case 'auth_required':
+        setStatus('等待机主授权 + 人脸验证', 'wait');
+        log('已向手机端发送接入申请，等待机主在手机上确认');
+        break;
+      case 'joined':
+        authorized = true;
+        el.iDev.textContent = msg.name || '—';
+        setStatus('已授权，正在接收画面', 'ok');
+        log('机主已授权，开始接收屏幕');
+        break;
+      case 'auth_state':
+        if (msg.state === 'fail') { setStatus('人脸验证未通过', 'err'); log('机主人脸验证未通过'); }
+        break;
+      case 'meta':
+        meta = { w: msg.w, h: msg.h };
+        el.iRes.textContent = `${msg.w}×${msg.h} (rot ${msg.rot ?? 0})`;
+        break;
+      case 'peer_left':
+        authorized = false;
+        setStatus('手机端已结束会话', 'err');
+        el.stage.classList.remove('live');
+        log('手机端已断开会话');
+        break;
+      case 'error':
+        setStatus(msg.msg || '错误', 'err');
+        log('错误：' + (msg.msg || '未知'));
+        break;
+      default:
+        log('← ' + msg.t);
+    }
+  }
+
+  // ---------------------------------------------------------------- 视频解码
+
+  function resetDecoder() {
+    try { decoder && decoder.close(); } catch (_) {}
+    decoder = null; avcC = null; codecString = null; pendingKey = false;
+    el.view.style.display = 'none';
+    el.mockView.style.display = 'none';
+  }
+
+  function ensureDecoder(sps, pps) {
+    avcC = buildAvcC(sps, pps);
+    codecString = 'avc1.' + [sps[1], sps[2], sps[3]]
+      .map((b) => b.toString(16).padStart(2, '0')).join('');
+    resetDecoderSoft();
+    if (typeof VideoDecoder === 'undefined') {
+      log('当前浏览器不支持 WebCodecs，无法解码 H.264，请使用 Chrome 94+ / Edge 94+');
+      return false;
+    }
+    decoder = new VideoDecoder({
+      output: (frame) => {
+        const c = el.view;
+        if (c.width !== frame.displayWidth || c.height !== frame.displayHeight) {
+          c.width = frame.displayWidth;
+          c.height = frame.displayHeight;
+        }
+        const ctx = c.getContext('2d');
+        ctx.drawImage(frame, 0, 0);
+        frame.close();
+        c.style.display = 'block';
+        el.mockView.style.display = 'none';
+        el.stage.classList.add('live');
+      },
+      error: (e) => { log('解码错误：' + e.message); resetDecoder(); }
+    });
+    decoder.configure({
+      codec: codecString,
+      description: avcC,
+      optimizeForLatency: true,
+      hardwareAcceleration: 'no-preference'
+    });
+    log(`解码器就绪 ${codecString} profile=${sps[1]} level=${sps[3]}`);
+    return true;
+  }
+
+  function resetDecoderSoft() {
+    try { decoder && decoder.close(); } catch (_) {}
+    decoder = null;
+  }
+
+  function buildAvcC(sps, pps) {
+    const out = new Uint8Array(11 + sps.length + pps.length);
+    let o = 0;
+    out[o++] = 1;
+    out[o++] = sps[1];      // AVCProfileIndication
+    out[o++] = sps[2];      // profile_compatibility
+    out[o++] = sps[3];      // AVCLevelIndication
+    out[o++] = 0xff;        // lengthSizeMinusOne = 4
+    out[o++] = 0xe1;        // numOfSPS = 1
+    out[o++] = (sps.length >> 8) & 0xff;
+    out[o++] = sps.length & 0xff;
+    out.set(sps, o); o += sps.length;
+    out[o++] = 0x01;        // numOfPPS = 1
+    out[o++] = (pps.length >> 8) & 0xff;
+    out[o++] = pps.length & 0xff;
+    out.set(pps, o);
+    return out;
+  }
+
+  /** 切分 Annex-B 码流为 NALU（去掉 start code 与尾部对齐 0） */
+  function splitAnnexB(buf) {
+    const nalus = [];
+    let prev = -1;
+    for (let i = 0; i + 2 < buf.length; i++) {
+      if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) {
+        if (prev >= 0) nalus.push(trim(buf.subarray(prev, i)));
+        prev = i + 3;
+        i += 2;
+      }
+    }
+    if (prev >= 0 && prev < buf.length) nalus.push(trim(buf.subarray(prev)));
+    if (nalus.length === 0) nalus.push(trim(buf));
+    return nalus;
+  }
+
+  function trim(a) {
+    let end = a.length;
+    while (end > 0 && a[end - 1] === 0) end--;
+    return a.subarray(0, end);
+  }
+
+  function nalType(n) { return n[0] & 0x1f; }
+
+  function handleVideo(frame) {
+    if (!authorized) return;
+    stats.bytes += frame.length;
+
+    // 帧头：magic(1) flags(1) tsNs(8) seq(4)
+    if (frame.length < 14 || frame[0] !== 0x01) return;
+    const flags = frame[1];
+    const tsNs = readI64(frame, 2);
+    const payload = frame.subarray(14);
+
+    // 自检通道：mock 被控端用 SVG 文本代替 H.264，用于无真机时验证链路
+    if (payload[0] === 0x3c /* '<' */) {
+      el.mockView.src = 'data:image/svg+xml;base64,' + b64(payload);
+      el.mockView.style.display = 'block';
+      el.view.style.display = 'none';
+      el.stage.classList.add('live');
+      el.mode.textContent = '自检模式（SVG）';
+      countFrame(tsNs);
+      return;
+    }
+
+    const nalus = splitAnnexB(payload);
+    let sps = null, pps = null, key = (flags & 0x01) !== 0;
+    const data = [];
+    for (const n of nalus) {
+      const t = nalType(n);
+      if (t === 7) sps = n;
+      else if (t === 8) pps = n;
+      else if (t === 5) { key = true; data.push(n); }
+      else data.push(n);
+    }
+
+    if (sps && pps) {
+      // 每次拿到新的 SPS/PPS 都重建解码器，避免分辨率/参数变化后卡死
+      if (!ensureDecoder(sps, pps)) return;
+    }
+    if (!decoder) { pendingKey = true; return; }
+
+    // 组装 AVCC：4 字节长度前缀
+    let total = 0;
+    for (const n of data) total += 4 + n.length;
+    const avcc = new Uint8Array(total);
+    let o = 0;
+    for (const n of data) {
+      avcc[o++] = (n.length >> 24) & 0xff;
+      avcc[o++] = (n.length >> 16) & 0xff;
+      avcc[o++] = (n.length >> 8) & 0xff;
+      avcc[o++] = n.length & 0xff;
+      avcc.set(n, o); o += n.length;
+    }
+    if (avcc.length === 0) return;
+
+    try {
+      decoder.decode(new EncodedVideoChunk({
+        type: key ? 'key' : 'delta',
+        timestamp: Math.round(tsNs / 1000),   // 微秒
+        data: avcc
+      }));
+      countFrame(tsNs);
+    } catch (e) {
+      log('decode() 异常：' + e.message);
+    }
+  }
+
+  function readI64(b, off) {
+    let hi = 0;
+    for (let i = 0; i < 4; i++) hi = hi * 256 + b[off + i];
+    let lo = 0;
+    for (let i = 4; i < 8; i++) lo = lo * 256 + b[off + i];
+    return hi * 4294967296 + lo;
+  }
+
+  function b64(u8) {
+    let s = '';
+    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s);
+  }
+
+  function countFrame(tsNs) {
+    stats.frames++;
+    if (tsNs > 0) {
+      const latMs = Math.max(0, Math.round((Date.now() * 1e6 - tsNs) / 1e6));
+      stats.lat = stats.lat ? Math.round(stats.lat * 0.8 + latMs * 0.2) : latMs;
+    }
+    const now = Date.now();
+    if (stats.lastSec === 0) stats.lastSec = now;
+    if (now - stats.lastSec >= 1000) {
+      const dt = now - stats.lastSec;
+      stats.fps = Math.round(stats.frames * 1000 / dt);
+      stats.kbps = Math.round(stats.bytes * 8 / dt / 1000);
+      el.iFps.textContent = stats.fps + ' fps';
+      el.iRate.textContent = stats.kbps >= 1000
+        ? (stats.kbps / 1000).toFixed(1) + ' Mbps' : stats.kbps + ' kbps';
+      el.iLat.textContent = stats.lat + ' ms';
+      stats.frames = 0; stats.bytes = 0; stats.lastSec = now;
+    }
+  }
+
+  // ---------------------------------------------------------------- 控制指令
+
+  function send(obj) {
+    if (ws && ws.readyState === 1 && authorized) ws.send(JSON.stringify(obj));
+  }
+
+  /** 归一化坐标必须以「实际显示的画面」为基准，不能用外层容器，否则缩放后会错位 */
+  function visibleScreen() {
+    if (el.mockView.style.display !== 'none' && el.mockView.naturalWidth !== 0) return el.mockView;
+    if (el.view.style.display !== 'none' && el.view.width) return el.view;
+    return null;
+  }
+
+  function norm(ev) {
+    const target = visibleScreen() || el.stage;
+    const r = target.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width));
+    const y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
+    return { x, y };
+  }
+
+  let drag = null;
+
+  el.stage.addEventListener('mousedown', (ev) => {
+    if (!authorized) return;
+    if (ev.button === 2) return;   // 右键交给 contextmenu 处理
+    const p = norm(ev);
+    drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, t: Date.now() };
+  });
+
+  el.stage.addEventListener('mousemove', (ev) => {
+    if (!drag) return;
+    const p = norm(ev);
+    drag.x1 = p.x; drag.y1 = p.y;
+  });
+
+  el.stage.addEventListener('mouseup', (ev) => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    const dur = Math.max(60, Date.now() - d.t);
+    const dx = Math.abs(d.x1 - d.x0), dy = Math.abs(d.y1 - d.y0);
+    if (dx < 0.01 && dy < 0.01) {
+      send({ t: 'control', op: 'tap', x: d.x0, y: d.y0 });
+      log(`tap (${d.x0.toFixed(3)}, ${d.y0.toFixed(3)})`);
+    } else {
+      send({ t: 'control', op: 'swipe', x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, dur });
+      log(`swipe (${d.x0.toFixed(2)},${d.y0.toFixed(2)}) → (${d.x1.toFixed(2)},${d.y1.toFixed(2)}) ${dur}ms`);
+    }
+  });
+
+  el.stage.addEventListener('contextmenu', (ev) => {
+    ev.preventDefault();
+    if (!authorized) return;
+    const p = norm(ev);
+    send({ t: 'control', op: 'long_press', x: p.x, y: p.y });
+    log(`long_press (${p.x.toFixed(3)}, ${p.y.toFixed(3)})`);
+  });
+
+  el.stage.addEventListener('dblclick', (ev) => {
+    if (!authorized) return;
+    const p = norm(ev);
+    send({ t: 'control', op: 'double_tap', x: p.x, y: p.y });
+    log(`double_tap (${p.x.toFixed(3)}, ${p.y.toFixed(3)})`);
+  });
+
+  // ---------- 触摸手势：让另一台手机/平板的浏览器也能直接当控制端 ----------
+  let touch = null;
+  let lpTimer = null;
+  let lastTapAt = 0;
+  let lastTapXY = null;
+  const MOVE_EPS = 0.015;   // 位移小于此值视为点击，否则算滑动
+
+  el.stage.addEventListener('touchstart', (ev) => {
+    if (!authorized || ev.touches.length !== 1) return;
+    const p = norm(ev.touches[0]);
+    touch = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, at: Date.now() };
+    lpTimer = setTimeout(() => {
+      if (!touch) return;
+      const d = touch; touch = null;
+      send({ t: 'control', op: 'long_press', x: d.x0, y: d.y0 });
+      log(`长按 (${d.x0.toFixed(3)}, ${d.y0.toFixed(3)})`);
+    }, 600);
+    ev.preventDefault();
+  }, { passive: false });
+
+  el.stage.addEventListener('touchmove', (ev) => {
+    if (!touch || ev.touches.length !== 1) return;
+    const p = norm(ev.touches[0]);
+    touch.x1 = p.x; touch.y1 = p.y;
+    // 一旦明显移动就取消长按判定
+    if (Math.abs(p.x - touch.x0) > MOVE_EPS || Math.abs(p.y - touch.y0) > MOVE_EPS) {
+      clearTimeout(lpTimer); lpTimer = null;
+    }
+    ev.preventDefault();
+  }, { passive: false });
+
+  el.stage.addEventListener('touchend', (ev) => {
+    clearTimeout(lpTimer); lpTimer = null;
+    if (!touch) return;
+    const d = touch; touch = null;
+    const dur = Math.max(60, Date.now() - d.at);
+    const dx = Math.abs(d.x1 - d.x0), dy = Math.abs(d.y1 - d.y0);
+
+    if (dx < MOVE_EPS && dy < MOVE_EPS) {
+      const now = Date.now();
+      const isDouble = lastTapXY && now - lastTapAt < 320 &&
+        Math.abs(d.x0 - lastTapXY.x) < 0.04 && Math.abs(d.y0 - lastTapXY.y) < 0.04;
+      if (isDouble) {
+        send({ t: 'control', op: 'double_tap', x: d.x0, y: d.y0 });
+        log(`双击 (${d.x0.toFixed(3)}, ${d.y0.toFixed(3)})`);
+        lastTapXY = null;
+      } else {
+        send({ t: 'control', op: 'tap', x: d.x0, y: d.y0 });
+        log(`点击 (${d.x0.toFixed(3)}, ${d.y0.toFixed(3)})`);
+        lastTapAt = now; lastTapXY = { x: d.x0, y: d.y0 };
+      }
+    } else {
+      send({ t: 'control', op: 'swipe', x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, dur });
+      log(`滑动 (${d.x0.toFixed(2)},${d.y0.toFixed(2)}) → (${d.x1.toFixed(2)},${d.y1.toFixed(2)})`);
+    }
+    ev.preventDefault();
+  }, { passive: false });
+
+  el.stage.addEventListener('touchcancel', () => {
+    clearTimeout(lpTimer); lpTimer = null; touch = null;
+  });
+
+  document.querySelectorAll('button[data-key]').forEach((b) => {
+    b.onclick = () => { send({ t: 'control', op: 'key', key: b.dataset.key }); log('key ' + b.dataset.key); };
+  });
+
+  el.sendText.onclick = () => {
+    const v = el.text.value;
+    if (!v) return;
+    send({ t: 'control', op: 'text', value: v });
+    log('text: ' + v);
+    el.text.value = '';
+  };
+  el.text.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.sendText.onclick(); });
+
+  log('页面就绪。若无真机可先用 tools/mock-host.js 做链路自检。');
+
+  // 支持 ?code=XXXXXX&auto=1 直接带入设备码并自动连接
+  const params = new URLSearchParams(location.search);
+  const presetCode = params.get('code');
+  if (presetCode) {
+    el.code.value = presetCode.toUpperCase();
+    if (params.get('auto') === '1') {
+      log(`检测到自动连接参数，设备码 ${presetCode.toUpperCase()}`);
+      setTimeout(() => el.connect.click(), 300);
+    }
+  }
+})();
+</script>
+</body>
+</html>
